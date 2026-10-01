@@ -1,0 +1,11 @@
+{
+  "name": "Remix SakhiAI - Voice Assistant for Rural Women",
+  "description": "Voice-first multilingual digital assistant empowering rural women to independently discover, check eligibility for, and access government schemes in Tamil and English.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
