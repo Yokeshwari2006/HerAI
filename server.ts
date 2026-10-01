@@ -16,26 +16,47 @@ const port = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json({ limit: '15mb' }));
 
-// Initialize GoogleGenAI SDK server-side with telemetry User-Agent
-let ai: GoogleGenAI | null = null;
-try {
-  ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
+// Helper to obtain a server-side Gemini AI client securely from environment variable
+function getAIClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'your_gemini_api_key_here') {
+    return null;
+  }
+  try {
+    return new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
       },
-    },
-  });
-} catch (err) {
-  console.warn('Could not initialize GoogleGenAI client (API key may be pending):', err);
+    });
+  } catch (err) {
+    console.warn('Could not initialize GoogleGenAI client:', err);
+    return null;
+  }
 }
+
+// ----------------------------------------------------
+// API ROUTER (Works both as /api/* and root serverless)
+// ----------------------------------------------------
+const apiRouter = express.Router();
+
+// Health check endpoint
+apiRouter.get('/health', (_req: Request, res: Response) => {
+  return res.json({
+    status: 'ok',
+    service: 'HerAI Multilingual API',
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here'),
+    timestamp: Date.now(),
+  });
+});
 
 // ----------------------------------------------------
 // AUTH & USER APIs
 // ----------------------------------------------------
 
-app.post('/api/auth/register', (req: Request, res: Response) => {
+apiRouter.post('/auth/register', (req: Request, res: Response) => {
   try {
     const { name, email, password, preferredLanguage } = req.body;
     if (!name || !email || !password) {
@@ -49,7 +70,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/auth/login', (req: Request, res: Response) => {
+apiRouter.post('/auth/login', (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -73,7 +94,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 });
 
-app.get('/api/auth/me', (req: Request, res: Response) => {
+apiRouter.get('/auth/me', (req: Request, res: Response) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     // Return guest profile
@@ -103,7 +124,7 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
   return res.json({ success: true, user: safeUser, isGuest: false });
 });
 
-app.put('/api/profile', (req: Request, res: Response) => {
+apiRouter.put('/profile', (req: Request, res: Response) => {
   try {
     const { userId, updates } = req.body;
     if (!userId || !updates) {
@@ -121,7 +142,7 @@ app.put('/api/profile', (req: Request, res: Response) => {
 // SCHEMES APIs
 // ----------------------------------------------------
 
-app.get('/api/schemes', (req: Request, res: Response) => {
+apiRouter.get('/schemes', (req: Request, res: Response) => {
   const category = req.query.category as string;
   let list = VERIFIED_SCHEMES;
   if (category) {
@@ -137,7 +158,7 @@ app.get('/api/schemes', (req: Request, res: Response) => {
   });
 });
 
-app.get('/api/schemes/:id', (req: Request, res: Response) => {
+apiRouter.get('/schemes/:id', (req: Request, res: Response) => {
   const scheme = VERIFIED_SCHEMES.find((s) => s.id === req.params.id);
   if (!scheme) {
     return res.status(404).json({ success: false, error: 'Scheme not found in verified database' });
@@ -149,7 +170,7 @@ app.get('/api/schemes/:id', (req: Request, res: Response) => {
 // DETERMINISTIC ELIGIBILITY ENGINE
 // ----------------------------------------------------
 
-app.post('/api/eligibility/check', (req: Request, res: Response) => {
+apiRouter.post('/eligibility/check', (req: Request, res: Response) => {
   try {
     const { schemeId, userAnswers = {} } = req.body;
     const scheme = VERIFIED_SCHEMES.find((s) => s.id === schemeId);
@@ -209,7 +230,7 @@ app.post('/api/eligibility/check', (req: Request, res: Response) => {
 // CHAT API (Gemini + Grounded Scheme Engine + Scam Guard)
 // ----------------------------------------------------
 
-app.post('/api/chat', async (req: Request, res: Response) => {
+apiRouter.post('/chat', async (req: Request, res: Response) => {
   try {
     const {
       userMessage,
@@ -240,7 +261,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       const warningMap: Record<string, string> = {
         ta: '🚨 மிக முக்கியமான பாதுகாப்பு எச்சரிக்கை! உங்கள் வங்கி OTP, UPI PIN, அல்லது கடவுச்சொல்லை யாரிடமும் ஒருபோதும் பகிர வேண்டாம். HerAI அல்லது அரசு ஒருபோதும் இதை கேட்காது.',
         hi: '🚨 महत्वपूर्ण सुरक्षा चेतावनी! कभी भी अपना बैंक OTP, UPI PIN या पासवर्ड किसी के साथ साझा न करें। HerAI या सरकार कभी भी आपसे यह नहीं मांगेगी।',
-        te: '🚨 ముఖ్యమైన భద్రతా హెచ్చరిక! మీ బ్యాంక్ OTP, UPI PIN లేదా పాస్‌వర్డ్‌ను ఎవరితోనూ పంచుకోవద్దు. HerAI లేదా ప్రభుత్వం దీనిని ఎప్పుడೂ అడగదు.',
+        te: '🚨 ముఖ్యమైన భద్రతా హెచ్చరిక! మీ బ్యాంక్ OTP, UPI PIN లేదా పాస్‌వర్డ్‌ను ఎవరితోనూ పంచుకోవద్దు. HerAI లేదా ప్రభుత్వం దీనిని ఎప్పుడూ అడగదు.',
         kn: '🚨 ಪ್ರಮುಖ ಸುರಕ್ಷತಾ ಎಚ್ಚರಿಕೆ! ನಿಮ್ಮ ಬ್ಯಾಂಕ್ OTP, UPI PIN ಅಥವಾ ಪಾಸ್‌ವರ್ಡ್ ಅನ್ನು ಯಾರೊಂದಿಗೂ ಹಂಚಿಕೊಳ್ಳಬೇಡಿ. HerAI ಅಥವಾ ಸರ್ಕಾರ ಎಂದಿಗೂ ಇದನ್ನು ಕೇಳುವುದಿಲ್ಲ.',
         ml: '🚨 സുരക്ഷാ മുന്നറിയിപ്പ്! നിങ്ങളുടെ ബാങ്ക് OTP, UPI PIN അല്ലെങ്കിൽ പാസ്‌വേഡ് ഒരിക്കലും ആരുമായും പങ്കിടരുത്. HerAI അല്ലെങ്കിൽ സർക്കാർ ഇത് ആവശ്യപ്പെടില്ല.',
         bn: '🚨 জরুরি নিরাপত্তা সতর্কতা! আপনার ব্যাঙ্কের OTP, UPI PIN বা পাসওয়ার্ড কখনোই কারো সাথে শেয়ার করবেন না। HerAI বা সরকার কখনোই এটি চাইবে না।',
@@ -313,7 +334,8 @@ Output strictly valid JSON with this exact structure:
   "quickReplies": ["Yes", "No"] or simple 2-4 choice options
 }`;
 
-    if (ai && process.env.GEMINI_API_KEY) {
+    const ai = getAIClient();
+    if (ai) {
       const conversationContext = history
         .slice(-6)
         .map((h: { role: string; text: string }) => `${h.role === 'user' ? 'User' : 'HerAI'}: ${h.text}`)
@@ -440,7 +462,7 @@ function getMockAIResponse(userMsg: string, currentSchemeId?: string, lang = 'en
 // MULTIMODAL DOCUMENT ANALYSIS (Gemini Vision)
 // ----------------------------------------------------
 
-app.post('/api/analyze-document', async (req: Request, res: Response) => {
+apiRouter.post('/analyze-document', async (req: Request, res: Response) => {
   try {
     const { imageBase64, mimeType = 'image/jpeg', schemeId, language = 'en' } = req.body;
 
@@ -475,7 +497,8 @@ Output strictly valid JSON:
   "tips": "Practical tip (e.g. ensure your name and bank account number are clearly visible)"
 }`;
 
-    if (ai && process.env.GEMINI_API_KEY) {
+    const ai = getAIClient();
+    if (ai) {
       const response = await ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: {
@@ -537,13 +560,13 @@ Output strictly valid JSON:
 // JOURNEY & SAVED SCHEMES APIS
 // ----------------------------------------------------
 
-app.get('/api/journey', (req: Request, res: Response) => {
+apiRouter.get('/journey', (req: Request, res: Response) => {
   const userId = req.query.userId as string;
   const journey = dbService.getJourney(userId);
   return res.json({ success: true, journey });
 });
 
-app.post('/api/journey', (req: Request, res: Response) => {
+apiRouter.post('/journey', (req: Request, res: Response) => {
   try {
     const journey = req.body;
     if (!journey || !journey.schemeId) {
@@ -556,13 +579,13 @@ app.post('/api/journey', (req: Request, res: Response) => {
   }
 });
 
-app.get('/api/saved-schemes', (req: Request, res: Response) => {
+apiRouter.get('/saved-schemes', (req: Request, res: Response) => {
   const userId = req.query.userId as string;
   const items = dbService.getSavedSchemes(userId);
   return res.json({ success: true, savedSchemes: items });
 });
 
-app.post('/api/saved-schemes', (req: Request, res: Response) => {
+apiRouter.post('/saved-schemes', (req: Request, res: Response) => {
   try {
     const { schemeId, userId, notes } = req.body;
     if (!schemeId) {
@@ -575,21 +598,25 @@ app.post('/api/saved-schemes', (req: Request, res: Response) => {
   }
 });
 
-app.delete('/api/saved-schemes/:id', (req: Request, res: Response) => {
+apiRouter.delete('/saved-schemes/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   const userId = req.query.userId as string;
   const removed = dbService.removeSavedScheme(id, userId);
   return res.json({ success: true, removed });
 });
 
-app.get('/api/history', (req: Request, res: Response) => {
+apiRouter.get('/history', (req: Request, res: Response) => {
   const userId = req.query.userId as string;
   const history = dbService.getHistory(userId);
   return res.json({ success: true, history });
 });
 
+// Mount the API Router on both '/api' and root for universal compatibility
+app.use('/api', apiRouter);
+app.use(apiRouter);
+
 // ----------------------------------------------------
-// VITE DEV MIDDLEWARE / STATIC ASSETS
+// VITE DEV MIDDLEWARE / STATIC ASSETS (Standalone Server)
 // ----------------------------------------------------
 
 async function startServer() {
@@ -608,8 +635,15 @@ async function startServer() {
   }
 
   app.listen(port, '0.0.0.0', () => {
-    console.log(`HerAI production server running on http://0.0.0.0:${port}`);
+    console.log(`HerAI server running on http://0.0.0.0:${port}`);
   });
 }
 
-startServer();
+// In Vercel serverless environment, Vercel invokes the exported app handler directly.
+// Only launch the standalone HTTP listener when running in standalone / local dev mode.
+if (process.env.VERCEL !== '1') {
+  startServer();
+}
+
+export { app };
+export default app;

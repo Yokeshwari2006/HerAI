@@ -11,8 +11,14 @@ interface DatabaseSchema {
   history: JourneyHistoryItem[];
 }
 
+// Local / serverless database paths
+// Note for production scale on Vercel: Vercel serverless runs in read-only /var/task with ephemeral /tmp.
+// For multi-region persistent production data across lambdas, connect a hosted database (e.g., PostgreSQL, Supabase, Neon)
+// by setting DATABASE_URL. The architecture below provides a resilient in-memory + fallback store that never throws EROFS.
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'herai_db.json');
+const TMP_DATA_DIR = path.resolve('/tmp', 'herai_data');
+const TMP_DB_FILE = path.join(TMP_DATA_DIR, 'herai_db.json');
 
 class DatabaseService {
   private data: DatabaseSchema = {
@@ -28,18 +34,23 @@ class DatabaseService {
 
   private init() {
     try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-
+      // 1. Try reading from primary data directory
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         this.data = JSON.parse(raw);
-      } else {
-        // Seed default demo user and initial journey
-        this.seedInitialData();
-        this.save();
+        return;
       }
+
+      // 2. Try reading from serverless /tmp fallback directory
+      if (fs.existsSync(TMP_DB_FILE)) {
+        const raw = fs.readFileSync(TMP_DB_FILE, 'utf-8');
+        this.data = JSON.parse(raw);
+        return;
+      }
+
+      // 3. Seed default demo user and initial journey in memory
+      this.seedInitialData();
+      this.save();
     } catch (err) {
       console.warn('Could not read persistent DB file, using memory store:', err);
       this.seedInitialData();
@@ -138,13 +149,25 @@ class DatabaseService {
   }
 
   private save() {
+    // 1. Try saving to standard local DATA_DIR
     try {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
       fs.writeFileSync(DB_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
-    } catch (err) {
-      console.warn('Failed to write database file:', err);
+      return;
+    } catch {
+      // Ignored: Likely running in a serverless read-only environment like Vercel Lambda
+    }
+
+    // 2. Fallback to writable serverless /tmp
+    try {
+      if (!fs.existsSync(TMP_DATA_DIR)) {
+        fs.mkdirSync(TMP_DATA_DIR, { recursive: true });
+      }
+      fs.writeFileSync(TMP_DB_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
+    } catch {
+      // Memory state is maintained even if disk write fails
     }
   }
 
